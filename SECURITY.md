@@ -5,15 +5,16 @@ Titan DSL is in early development. Security fixes currently target the latest
 
 ## Reporting a vulnerability
 
-Do not post sensitive exploit details or credentials in a public issue. If the
-repository's Security tab offers **Report a vulnerability**, use that private
-reporting channel:
+Do not post sensitive exploit details or credentials in a public issue. Use
+**Report a vulnerability** in the repository's Security tab. Private vulnerability
+reporting is enabled:
 
 <https://github.com/rbilleci/titan-dsl/security/advisories/new>
 
-If private reporting is unavailable, open an issue requesting a private security
-contact without including exploit details. The maintainer must establish that
-channel before you share sensitive information. No response-time SLA is offered.
+If private reporting is temporarily unavailable, open an issue requesting a
+private security contact without including exploit details. The maintainer must
+establish that channel before you share sensitive information. No response-time
+SLA is offered.
 
 ## Safe use and boundaries
 

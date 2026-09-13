@@ -5,6 +5,9 @@ repository is <https://github.com/rbilleci/titan-dsl>. The current distribution
 path is a source checkout or local Maven publication, not a configured public
 artifact registry.
 
+See the [public launch record](public-launch.md) for the tested source revision,
+security audit, and initial source-release boundaries.
+
 ## Verify a candidate
 
 1. Review the repository contents and history for secrets, private material, and
@@ -29,6 +32,9 @@ artifact registry.
 6. Record test results and update `CHANGELOG.md`. Choose an explicit release
    version in `gradle.properties`, updating documented/example dependency coordinates
    together. Keep the tag, release notes, and artifact version consistent.
+7. Audit resolved runtime, test, annotation-processor, and buildscript dependencies
+   against current advisories and refresh GitHub's manual dependency snapshot.
+   Actions is intentionally disabled; the snapshot is not continuous CI.
 
 For local publication only, run `./gradlew publishToMavenLocal`. Do not use
 Maven-local contents as evidence of a clean external-consumer build.
