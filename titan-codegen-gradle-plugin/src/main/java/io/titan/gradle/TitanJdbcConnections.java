@@ -114,10 +114,10 @@ final class TitanJdbcConnections {
     static String suggestedDriverCoordinates(String jdbcUrl) {
         String url = jdbcUrl == null ? "" : jdbcUrl.toLowerCase(Locale.ROOT);
         if (url.startsWith("jdbc:postgresql:")) {
-            return "org.postgresql:postgresql:42.7.4";
+            return "org.postgresql:postgresql:42.7.13";
         }
         if (url.startsWith("jdbc:mysql:")) {
-            return "com.mysql:mysql-connector-j:8.4.0";
+            return "com.mysql:mysql-connector-j:26.7.0";
         }
         if (url.startsWith("jdbc:mariadb:")) {
             return "org.mariadb.jdbc:mariadb-java-client:3.4.1";

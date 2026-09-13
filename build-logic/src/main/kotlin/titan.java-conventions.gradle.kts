@@ -19,6 +19,13 @@ java {
 }
 
 dependencies {
+    constraints {
+        if (project.name != "titan-dsl") {
+            implementation(catalog.findLibrary("commons-compress").get()) {
+                because("Avoid vulnerable archive handling pulled transitively by Testcontainers")
+            }
+        }
+    }
     errorprone(catalog.findLibrary("errorprone-core").get())
     testImplementation(platform(catalog.findLibrary("junit-bom").get()))
     testImplementation(catalog.findLibrary("junit-jupiter").get())

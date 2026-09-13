@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Update PostgreSQL JDBC to 42.7.13 and MySQL Connector/J to 26.7.0; constrain
+  Commons Compress to 1.28.0 in codegen modules without adding DSL runtime dependencies.
+- Align documented driver coordinates and missing-driver suggestions with the
+  security-reviewed versions.
 - Add immutable `DSL.using(dialect)` query contexts and no-argument `render()`
   on SELECT/DML builders. Preserve typed projections and explicit-dialect APIs.
 - Context CTE helpers retain structured snapshots, dialect propagation, and bind

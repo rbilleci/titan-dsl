@@ -28,9 +28,9 @@ class TitanJdbcConnectionsTest {
     @Test
     void missingDriverMessageSuggestsKnownCoordinatesByUrlPrefix() {
         assertTrue(TitanJdbcConnections.missingDriverMessage("jdbc:postgresql://h/db", List.of())
-                .contains("org.postgresql:postgresql"));
+                .contains("org.postgresql:postgresql:42.7.13"));
         assertTrue(TitanJdbcConnections.missingDriverMessage("jdbc:mysql://h/db", List.of())
-                .contains("com.mysql:mysql-connector-j"));
+                .contains("com.mysql:mysql-connector-j:26.7.0"));
         assertTrue(TitanJdbcConnections.missingDriverMessage("jdbc:mariadb://h/db", List.of())
                 .contains("org.mariadb.jdbc:mariadb-java-client"));
         assertTrue(TitanJdbcConnections.missingDriverMessage("jdbc:somethingelse://h/db", List.of())
