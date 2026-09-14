@@ -682,14 +682,25 @@ public class SelectBuilder {
         List<Condition> onFilters = null;
         if (filters != null) {
             Condition fromFilter = automaticFilterFor(from);
+            // True once any relation to the left of the current join carries a WHERE filter: a
+            // later RIGHT or FULL join would then drop its unmatched rows instead of NULL-extending.
+            boolean leftSideFiltered = fromFilter != null;
             if (fromFilter != null) {
                 effectiveWhere = effectiveWhere == null ? fromFilter : effectiveWhere.and(fromFilter);
             }
             onFilters = new ArrayList<>(joins.size());
             for (JoinSpec join : joins) {
                 Condition filter = join.relation() == null ? null : automaticFilterFor(join.relation());
+                boolean narrows = (join.rightOuter() && leftSideFiltered)
+                        || (join.fullOuter() && (leftSideFiltered || filter != null));
+                if (narrows && !filters.allowsOuterJoinNarrowing()) {
+                    throw new IllegalStateException(join.joinType() + " with an automatic filter on its preserved side "
+                            + "drops unmatched rows. Use LEFT JOIN, allowOuterJoinNarrowing() on the FilterPolicy, "
+                            + "or DSLContext.unscoped().");
+                }
                 if (filter != null && !join.leftOuter()) {
                     effectiveWhere = effectiveWhere == null ? filter : effectiveWhere.and(filter);
+                    leftSideFiltered = true;
                     filter = null;
                 }
                 onFilters.add(filter);
@@ -787,6 +798,14 @@ public class SelectBuilder {
 
         boolean leftOuter() {
             return "LEFT JOIN".equals(joinType);
+        }
+
+        boolean rightOuter() {
+            return "RIGHT JOIN".equals(joinType);
+        }
+
+        boolean fullOuter() {
+            return "FULL OUTER JOIN".equals(joinType);
         }
 
         void appendTo(SqlWriter writer, Condition filter) {

@@ -574,9 +574,10 @@ Filter binds (`[42, 9, userId]`) follow any binds from your own `where(...)`.
   rejected at render time. `policy.explain(table)` prints the resolved bindings.
 - Filters are added at render time to every table and view in `FROM`/`JOIN` and
   to UPDATE/DELETE targets. A `LEFT JOIN` receives its filter in `ON`; other
-  joins receive it in `WHERE`, so RIGHT and FULL joins lose unmatched rows from
-  the filtered side. Structured subqueries and `db.name(...)` CTEs render with
-  their own filters; raw SQL is not inspected.
+  joins receive it in `WHERE`. A RIGHT or FULL join whose preserved side is
+  filtered would therefore lose unmatched rows, so it is rejected unless the
+  policy opts in with `allowOuterJoinNarrowing()`. Structured subqueries and
+  `db.name(...)` CTEs render with their own filters; raw SQL is not inspected.
 - `db.unscoped()` applies no filters, and so do queries built with the static
   `DSL.select(...)` factories, including as subqueries or set-operation operands.
   `filters(policy, supplier)` reads the scope when a builder is created, for
@@ -605,6 +606,18 @@ scope could read.
   carries the scope column, or with database row-level security.
 - A scope value must be compatible with the bound column's SQL type, and one
   filter cannot bind columns of different SQL types; both are reported.
+
+Keep the policy's coverage under review. `policy.explain()` describes every
+relation's read and write handling in a stable text form; check it into a
+file and assert it in a test, so a migration or binding change that alters
+which filters apply where shows up as a diff:
+
+```java
+@Test
+void filterCoverageIsReviewed() throws IOException {
+    assertEquals(Files.readString(Path.of("src/test/resources/filter-policy.txt")), Policies.APP.explain());
+}
+```
 
 Hand-written descriptors can be listed directly:
 `FilterPolicy.builder(new Users(), new Orders())`.

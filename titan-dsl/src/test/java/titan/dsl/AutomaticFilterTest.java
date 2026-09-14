@@ -167,6 +167,28 @@ class AutomaticFilterTest {
     }
 
     @Test
+    void rightAndFullJoinsWithAFilteredPreservedSideAreRejectedUnlessAllowed() {
+        var db = tenant42();
+        var right = assertThrows(IllegalStateException.class, () -> db.select(ORDERS.ID).from(ORDERS)
+                .rightJoin(CUSTOMERS).on(ORDERS.CUSTOMER_ID, CUSTOMERS.ID).render());
+        assertTrue(right.getMessage().startsWith("RIGHT JOIN with an automatic filter on its preserved side"), right.getMessage());
+        assertThrows(IllegalStateException.class, () -> db.select(ORDERS.ID).from(ORDERS)
+                .fullOuterJoin(CUSTOMERS).on(ORDERS.CUSTOMER_ID, CUSTOMERS.ID).render());
+        assertThrows(IllegalStateException.class, () -> db.select(COUNTRIES.CODE).from(COUNTRIES)
+                .fullOuterJoin(CUSTOMERS).on(Condition.of("1 = 1")).render());
+
+        // Only the preserved side is filtered: nothing is dropped, so it renders.
+        assertEquals("SELECT code FROM app.countries RIGHT JOIN app.customers ON 1 = 1 WHERE app.customers.tenant_id = ?",
+                db.select(COUNTRIES.CODE).from(COUNTRIES).rightJoin(CUSTOMERS).on(Condition.of("1 = 1")).render().sql());
+
+        var allowed = FilterPolicy.builder(ORDERS, CUSTOMERS).byColumn(TENANT, "tenant_id").allowOuterJoinNarrowing().build();
+        assertEquals("SELECT id FROM app.orders RIGHT JOIN app.customers ON customer_id = id"
+                + " WHERE (app.orders.tenant_id = ?) AND (app.customers.tenant_id = ?)",
+                DSL.using(SqlDialect.POSTGRESQL).filters(allowed).scoped(Scope.of(TENANT, 42L))
+                        .select(ORDERS.ID).from(ORDERS).rightJoin(CUSTOMERS).on(ORDERS.CUSTOMER_ID, CUSTOMERS.ID).render().sql());
+    }
+
+    @Test
     void literalModeAndMysqlRenderTheSameShape() {
         var mysql = DSL.using(SqlDialect.MYSQL).filters(tenantPolicy()).scoped(Scope.of(TENANT, 42L));
         assertEquals("SELECT id FROM app.orders WHERE app.orders.tenant_id = 42",

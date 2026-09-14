@@ -31,6 +31,10 @@ final class QueryFilters {
         return policy.conditionFor(relation, scope);
     }
 
+    boolean allowsOuterJoinNarrowing() {
+        return policy.allowsOuterJoinNarrowing();
+    }
+
     List<FilterPolicy.Fill> checkInsert(TableLike<?> table, List<Column<?>> columns, List<List<Object>> rows) {
         return policy.checkInsert(table, scope, columns, rows);
     }
