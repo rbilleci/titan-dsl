@@ -16,6 +16,10 @@
   `integrationTest`.
 - Read public descriptor fields of package-private table classes declared
   outside `titan.dsl` (`selectFrom` and filter policies).
+- Reject RIGHT and FULL OUTER joins whose preserved side carries an automatic
+  filter, since the WHERE placement would drop unmatched rows; policies can opt
+  in with `allowOuterJoinNarrowing()`. Document golden-file review of
+  `explain()`.
 - Reject `set`, `columns`, `values`, and `select` on an INSERT after
   `onConflict(...)`: a second chained `set` after `doUpdate().set(...)` silently
   became an inserted column instead of a conflict assignment.

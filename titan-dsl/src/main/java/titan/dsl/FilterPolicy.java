@@ -40,9 +40,15 @@ public final class FilterPolicy {
     private static final Column<Integer> ONE = new Column<>("1", SQLType.INTEGER, Nullability.NOT_NULL);
 
     private final Map<TableKey, TablePlan> plans;
+    private final boolean allowOuterJoinNarrowing;
 
-    private FilterPolicy(Map<TableKey, TablePlan> plans) {
+    private FilterPolicy(Map<TableKey, TablePlan> plans, boolean allowOuterJoinNarrowing) {
         this.plans = plans;
+        this.allowOuterJoinNarrowing = allowOuterJoinNarrowing;
+    }
+
+    boolean allowsOuterJoinNarrowing() {
+        return allowOuterJoinNarrowing;
     }
 
     public static Builder builder(TableLike<?>... catalog) {
@@ -629,6 +635,7 @@ public final class FilterPolicy {
         private final Set<TableKey> exemptRelations = new HashSet<>();
         private final Map<TableKey, Set<Filter<?>>> exemptFilters = new HashMap<>();
         private int maxDepth = 2;
+        private boolean allowOuterJoinNarrowing;
 
         private Builder(Collection<? extends TableLike<?>> relations) {
             for (TableLike<?> relation : relations) {
@@ -731,6 +738,16 @@ public final class FilterPolicy {
                 register(filter);
                 exemptFilters.computeIfAbsent(key, k -> new HashSet<>()).add(filter);
             }
+            return this;
+        }
+
+        /**
+         * Permits RIGHT and FULL OUTER joins whose preserved side is filtered. Their filters
+         * render in WHERE, which drops unmatched rows; without this call such queries are
+         * rejected so the narrowing is never silent.
+         */
+        public Builder allowOuterJoinNarrowing() {
+            this.allowOuterJoinNarrowing = true;
             return this;
         }
 
@@ -928,7 +945,7 @@ public final class FilterPolicy {
                 }
                 throw new IllegalStateException(message.toString());
             }
-            return new FilterPolicy(Collections.unmodifiableMap(plans));
+            return new FilterPolicy(Collections.unmodifiableMap(plans), allowOuterJoinNarrowing);
         }
 
         private Builder putExplicit(TableLike<?> relation, Filter<?> filter, Object binding) {

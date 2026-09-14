@@ -194,6 +194,14 @@ class AutomaticFilterLiveDbIT {
         executeUpdate(connection, tenant42.insertInto(ORDER_LINES).set(ORDER_LINES.ID, 1L).set(ORDER_LINES.ORDER_ID, 1L)
                 .set(ORDER_LINES.QTY, 1).onConflict(ORDER_LINES.ID).doUpdate().set(ORDER_LINES.QTY, 99).render());
         assertEquals(99L, scalar(connection, "SELECT qty FROM app.order_lines WHERE id = 1"));
+        // anyOf inside the upsert guard: row 3 stays visible through org 9 and changes owner;
+        // row 4 is visible only through owner 100, so the transfer is refused.
+        executeUpdate(connection, owner.insertInto(ORDERS).set(ORDERS.ID, 3L).set(ORDERS.ORG_ID, 9L)
+                .onConflict(ORDERS.ID).doUpdate().set(ORDERS.OWNER_ID, 777L).render());
+        executeUpdate(connection, owner.insertInto(ORDERS).set(ORDERS.ID, 4L).set(ORDERS.ORG_ID, 9L)
+                .onConflict(ORDERS.ID).doUpdate().set(ORDERS.OWNER_ID, 777L).render());
+        assertEquals(777L, scalar(connection, "SELECT owner_id FROM app.orders WHERE id = 3"));
+        assertEquals(100L, scalar(connection, "SELECT owner_id FROM app.orders WHERE id = 4"));
 
         // Copy within scope.
         assertEquals(5, executeUpdate(connection, tenant42.insertInto(ORDERS).columns(ORDERS.ID, ORDERS.TENANT_ID, ORDERS.ORG_ID)
