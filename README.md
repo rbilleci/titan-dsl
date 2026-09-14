@@ -78,6 +78,13 @@ Inspect rendered SQL and ordered bind values, assert them in tests, and choose
 the dialect explicitly. PostgreSQL and MySQL [upserts](#inserts-updates-deletes-and-upserts)
 use their respective syntax. Your application decides when and how SQL executes.
 
+### Apply tenant and ownership filters automatically
+
+Declare once which columns or foreign-key paths carry a tenant, organization,
+or user scope. The context adds those predicates to every SELECT, UPDATE, and
+DELETE it renders, and a table with no binding is rejected when the policy is
+built rather than queried unfiltered. See [automatic filters](#automatic-filters).
+
 ### Adopt it query by query
 
 Start with a search endpoint or report, generate the catalog for the schemas it
@@ -92,6 +99,7 @@ belong in the build; the DSL library remains a small runtime dependency.
 - [Construct and render queries](#construct-and-render-queries)
 - [Joins](#joins-and-aliases), [reporting](#aggregation-and-windows), [subqueries and CASE](#subqueries-and-case-expressions)
 - [CTEs and set operations](#ctes-and-set-operations), [DML and upserts](#inserts-updates-deletes-and-upserts)
+- [Automatic filters](#automatic-filters)
 - [JDBC execution](#execute-through-your-applications-jdbc-connection)
 - [Method behavior](#typed-projections-and-convenience-methods), [dialect and safety limits](#dialect-and-safety-limits)
 - [Development and troubleshooting](#development-and-troubleshooting)
@@ -244,8 +252,10 @@ From `my-app`, run:
 ../titan-dsl/gradlew titanGenerate compileJava
 ```
 
-This generates `build/generated/sources/titan/generated/catalog/app/tables/Users.java`
-and `.../app/records/UsersRecord.java`. The table exposes `Users.USERS` with
+This generates `build/generated/sources/titan/generated/catalog/app/tables/Users.java`,
+`.../app/records/UsersRecord.java`, and `.../generated/catalog/Catalog.java`, whose
+`Catalog.TABLES` and `Catalog.VIEWS` list every generated singleton for
+[automatic filters](#automatic-filters). The table exposes `Users.USERS` with
 `ID`, `NAME`, `ACTIVE`, `COUNTRY`, and `MANAGER_ID` fields. Import that singleton
 to write the query at the top of this README. A PostgreSQL schema named `public`
 maps to the Java package segment `public_`.
@@ -506,6 +516,73 @@ The database must have the appropriate uniqueness constraint. MySQL considers
 its unique keys rather than an explicit conflict target. INSERT SELECT,
 expression-valued assignments, and PostgreSQL RETURNING are also available;
 review captured expression/literal behavior when supplying calculated values.
+
+## Automatic filters
+
+Declare row filters such as tenant, organization, or user scoping once, and let
+the context add them to every SELECT, UPDATE, and DELETE it renders. A
+`FilterPolicy` is validated against the whole catalog when it is built, so a
+table without a binding is a startup error rather than an unfiltered query.
+
+```java
+import static titan.dsl.FilterPath.via;
+import generated.catalog.Catalog;
+
+static final Filter<Long> TENANT = Filter.of("tenant");
+static final Filter<Long> ORG = Filter.of("org");
+static final Filter<UUID> USER = Filter.of("user");
+
+var policy = FilterPolicy.builder(Catalog.TABLES)
+        .byColumn(TENANT, "tenant_id")   // every table that has the column
+        .derive(TENANT)                  // the rest: nearest bound table through foreign keys
+        .byColumn(ORG, "org_id").byColumn(USER, "owner_id").anyOf(ORG, USER)
+        .bind(ORDER_LINES, USER, via(ORDER_LINES.ORDER_ID, ORDERS.CUSTOMER_ID).to(CUSTOMERS.USER_ID))
+        .exempt(COUNTRIES)
+        .build();
+
+var db = DSL.using(SqlDialect.POSTGRESQL).filters(policy);   // once
+var request = db.scoped(Scope.of(TENANT, 42L).with(ORG, 9L).with(USER, userId));
+var rendered = request.select(ORDERS.ID).from(ORDERS).render();
+```
+
+```sql
+SELECT id FROM app.orders
+WHERE (app.orders.tenant_id = ?) AND ((app.orders.org_id = ?) OR (app.orders.owner_id = ?))
+```
+
+Filter binds (`[42, 9, userId]`) follow any binds from your own `where(...)`.
+`Filter.of(name)` declares a typed key; the SQL type comes from the bound column.
+
+| Binding | Declaration | Rendered form |
+| --- | --- | --- |
+| Column on the relation | `byColumn(TENANT, "tenant_id")` for the catalog, or `bind(ORDERS, TENANT, ORDERS.TENANT_ID)` | `alias.tenant_id = ?`, or `IN (?, ...)` for `Scope.withAny` |
+| Foreign-key path | `bind(ORDER_LINES, TENANT, via(ORDER_LINES.ORDER_ID))`, optionally `.to(column)` | correlated `EXISTS (SELECT 1 FROM app.orders AS _tf1 WHERE ...)` |
+| Derived path | `derive(TENANT)` | as above, following the shortest unambiguous route within `maxDepth` (default 2) |
+| DSL lambda | `bind(ORDERS, LIVE, t -> t.col(ORDERS.DELETED_AT).isNull())` | the returned `Condition` |
+
+- The policy is a conjunction. `anyOf(ORG, USER)` forms a group whose bound
+  members are ORed; every relation needs at least one bound member.
+- A value filter needs a value in the `Scope` or an explicit `Scope.skip(filter)`;
+  a missing value is a rendering error. `Filter.predicate(name)` filters take no
+  value and apply only where bound; `skip` disables them for a request too.
+- Every catalog relation must be bound, derived, or `exempt` for each value
+  filter; `build()` reports all gaps at once. Relations outside the catalog are
+  rejected at render time. `policy.explain(table)` prints the resolved bindings.
+- Filters are added at render time to every table and view in `FROM`/`JOIN` and
+  to UPDATE/DELETE targets. A `LEFT JOIN` receives its filter in `ON`; other
+  joins receive it in `WHERE`, so RIGHT and FULL joins lose unmatched rows from
+  the filtered side. Structured subqueries and `db.name(...)` CTEs render with
+  their own filters; raw SQL is not inspected, and INSERT values are not filled in.
+- `db.unscoped()` applies no filters, and so do queries built with the static
+  `DSL.select(...)` factories, including as subqueries or set-operation operands.
+  `filters(policy, supplier)` reads the scope when a builder is created, for
+  request-context integration.
+- Path subqueries alias their tables `_tf1`, `_tf2`, ...; avoid that prefix.
+  Only `bind(table, Filter<T>, Column<T>)` is checked at compile time; column
+  conventions and lambdas are checked by the database.
+
+Hand-written descriptors can be listed directly:
+`FilterPolicy.builder(new Users(), new Orders())`.
 
 ## Execute through your application's JDBC connection
 

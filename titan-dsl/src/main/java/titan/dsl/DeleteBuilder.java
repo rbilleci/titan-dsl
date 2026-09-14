@@ -11,17 +11,19 @@ import java.util.StringJoiner;
 public final class DeleteBuilder {
 
     private final SqlDialect configuredDialect;
+    private final QueryFilters filters;
 
     private final Table<?> table;
     private Condition whereCondition;
     private final List<Column<?>> returningColumns = new java.util.ArrayList<>();
 
     DeleteBuilder(Table<?> table) {
-        this(null, table);
+        this(null, null, table);
     }
 
-    DeleteBuilder(SqlDialect dialect, Table<?> table) {
+    DeleteBuilder(SqlDialect dialect, QueryFilters filters, Table<?> table) {
         this.configuredDialect = dialect;
+        this.filters = filters;
         this.table = Objects.requireNonNull(table, "table");
     }
 
@@ -89,9 +91,14 @@ public final class DeleteBuilder {
     private void appendTo(SqlWriter writer) {
         writer.append("DELETE FROM ").append(qualifiedName(table));
 
-        if (whereCondition != null) {
+        Condition effectiveWhere = whereCondition;
+        Condition filter = filters == null ? null : filters.conditionFor(table);
+        if (filter != null) {
+            effectiveWhere = effectiveWhere == null ? filter : effectiveWhere.and(filter);
+        }
+        if (effectiveWhere != null) {
             writer.append(" WHERE ");
-            whereCondition.appendTo(writer);
+            effectiveWhere.appendTo(writer);
         }
 
         if (!returningColumns.isEmpty()) {

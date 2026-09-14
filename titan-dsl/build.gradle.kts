@@ -85,6 +85,9 @@ fun selectBuilderSource(n: Int): String {
         append("    SelectBuilder$n(SqlDialect dialect,\n            $constructorParams) {\n")
         append("        super(dialect, $constructorArgs);\n")
         append("    }\n\n")
+        append("    SelectBuilder$n(SqlDialect dialect,\n            QueryFilters filters,\n            $constructorParams) {\n")
+        append("        super(dialect, filters, $constructorArgs);\n")
+        append("    }\n\n")
         append(
             listOf(
                 "from(TableLike<?> table)" to "from(table)",
@@ -140,7 +143,7 @@ val generateAritySources = tasks.register("generateAritySources") {
     group = "build"
     // The template lives in this build script; bump when the template changes so the task re-runs.
     inputs.property("arityCap", arityCap)
-    inputs.property("templateVersion", 5)
+    inputs.property("templateVersion", 6)
     outputs.dir(aritySourcesDir)
     doLast {
         val packageDir = aritySourcesDir.get().asFile.resolve("titan/dsl")

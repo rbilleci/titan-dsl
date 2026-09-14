@@ -93,6 +93,10 @@ public final class DSL {
     }
 
     static SelectBuilder selectFrom(SqlDialect dialect, TableLike<?> table) {
+        return selectFrom(dialect, null, table);
+    }
+
+    static SelectBuilder selectFrom(SqlDialect dialect, QueryFilters filters, TableLike<?> table) {
         if (table == null) {
             throw new IllegalArgumentException("table must not be null");
         }
@@ -101,7 +105,7 @@ public final class DSL {
             throw new IllegalArgumentException("selectFrom requires at least one public Column field on table "
                     + table.getClass().getName());
         }
-        return new SelectBuilder(dialect, columns.toArray(Column[]::new)).from(table);
+        return new SelectBuilder(dialect, filters, columns.toArray(Column[]::new)).from(table);
     }
 
     public static <T1> SelectBuilder1<T1> select(Column<T1> column1) {

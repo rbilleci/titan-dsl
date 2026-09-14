@@ -305,7 +305,7 @@ class SelectBuilderTest {
                 .fetch();
 
         assertEquals(
-                "SELECT email, name FROM public.accounts LEFT JOIN public.plans ON plan_id = id AND monthly_fee > 10.0",
+                "SELECT email, name FROM public.accounts LEFT JOIN public.plans ON plan_id = id AND (monthly_fee > 10.0)",
                 sql);
     }
 
