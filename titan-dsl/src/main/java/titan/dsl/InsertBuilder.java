@@ -20,6 +20,7 @@ import java.util.StringJoiner;
 public final class InsertBuilder {
 
     private final SqlDialect configuredDialect;
+    private final QueryFilters filters;
 
     private final Table<?> table;
     private final LinkedHashMap<Column<?>, Object> assignments = new LinkedHashMap<>();
@@ -30,11 +31,12 @@ public final class InsertBuilder {
     private ConflictAction conflictAction;
 
     InsertBuilder(Table<?> table) {
-        this(null, table);
+        this(null, null, table);
     }
 
-    InsertBuilder(SqlDialect dialect, Table<?> table) {
+    InsertBuilder(SqlDialect dialect, QueryFilters filters, Table<?> table) {
         this.configuredDialect = dialect;
+        this.filters = filters;
         this.table = Objects.requireNonNull(table, "table");
     }
 
@@ -168,41 +170,18 @@ public final class InsertBuilder {
         writer.append("INSERT INTO ").append(qualifiedName(table));
 
         if (!assignments.isEmpty()) {
-            appendColumns(writer, assignments.keySet().toArray(new Column<?>[0]));
-            writer.append(" VALUES (");
-            boolean first = true;
-            for (Map.Entry<Column<?>, Object> entry : assignments.entrySet()) {
-                if (!first) {
-                    writer.append(", ");
-                }
-                writer.appendValue(BindValue.of(entry.getValue(), entry.getKey().sqlType()));
-                first = false;
-            }
-            writer.append(')');
+            appendValuesRows(writer, new ArrayList<>(assignments.keySet()), List.of(new ArrayList<>(assignments.values())));
         } else if (selectSource != null) {
+            if (filters != null) {
+                filters.checkInsertSelect(table, explicitColumns, selectSource);
+            }
             if (!explicitColumns.isEmpty()) {
-                appendColumns(writer, explicitColumns.toArray(new Column<?>[0]));
+                appendColumns(writer, explicitColumns);
             }
             writer.append(' ');
             selectSource.appendTo(writer, true);
         } else if (!batchValues.isEmpty()) {
-            appendColumns(writer, explicitColumns.toArray(new Column<?>[0]));
-            writer.append(" VALUES ");
-            boolean firstRow = true;
-            for (List<Object> row : batchValues) {
-                if (!firstRow) {
-                    writer.append(", ");
-                }
-                writer.append('(');
-                for (int i = 0; i < row.size(); i++) {
-                    if (i > 0) {
-                        writer.append(", ");
-                    }
-                    writer.appendValue(BindValue.of(row.get(i), explicitColumns.get(i).sqlType()));
-                }
-                writer.append(')');
-                firstRow = false;
-            }
+            appendValuesRows(writer, explicitColumns, batchValues);
         } else {
             throw new IllegalStateException("insert requires set(...), values(...), or select(...)");
         }
@@ -229,12 +208,62 @@ public final class InsertBuilder {
         }
     }
 
+    /**
+     * Renders the column list and VALUES rows. Under a scope, checked columns are verified and
+     * missing ones are filled at render time only; the builder's own state is never changed.
+     */
+    private void appendValuesRows(SqlWriter writer, List<Column<?>> columns, List<List<Object>> rows) {
+        List<FilterPolicy.Fill> fills = filters == null ? List.of() : filters.checkInsert(table, columns, rows);
+        List<Column<?>> allColumns = new ArrayList<>(columns);
+        for (FilterPolicy.Fill fill : fills) {
+            allColumns.add(fill.column());
+        }
+        appendColumns(writer, allColumns);
+        writer.append(" VALUES ");
+        boolean firstRow = true;
+        for (List<Object> row : rows) {
+            if (!firstRow) {
+                writer.append(", ");
+            }
+            writer.append('(');
+            for (int i = 0; i < row.size(); i++) {
+                if (i > 0) {
+                    writer.append(", ");
+                }
+                writer.appendValue(BindValue.of(row.get(i), columns.get(i).sqlType()));
+            }
+            for (FilterPolicy.Fill fill : fills) {
+                writer.append(", ");
+                writer.appendValue(BindValue.of(fill.value(), fill.column().sqlType()));
+            }
+            writer.append(')');
+            firstRow = false;
+        }
+    }
+
     private void appendConflictClause(SqlWriter writer) {
         if (conflictAction == null) {
             return;
         }
         if (conflictAction.assignments.isEmpty()) {
             throw new IllegalStateException("onConflict(...).doUpdate().set(...) requires at least one set(...) assignment");
+        }
+        // The existing row an upsert updates must be visible (USING) and stay visible (WITH CHECK).
+        // PostgreSQL takes that as a DO UPDATE ... WHERE; MySQL has no such clause, so the unique
+        // key itself must carry the checked columns.
+        Condition guard = null;
+        if (filters != null) {
+            Condition stillVisible = filters.checkUpdate(table, conflictAction.assignments);
+            if (writer.dialect() == SqlDialect.MYSQL) {
+                filters.checkMysqlUpsert(table, conflictAction.columns);
+                if (stillVisible != null) {
+                    throw new IllegalStateException("MySQL ON DUPLICATE KEY UPDATE on " + qualifiedName(table)
+                            + " cannot guard an anyOf(...) assignment that leaves the current scope.");
+                }
+            } else {
+                Condition existing = filters.conditionFor(table);
+                guard = existing == null ? stillVisible : stillVisible == null ? existing : existing.and(stillVisible);
+            }
         }
         if (writer.dialect() == SqlDialect.POSTGRESQL) {
             StringJoiner conflictColumns = new StringJoiner(", ");
@@ -253,6 +282,10 @@ public final class InsertBuilder {
             writer.append(assignment.getKey().name()).append(" = ");
             UpdateBuilder.appendAssignmentValue(writer, assignment.getKey(), assignment.getValue());
             first = false;
+        }
+        if (guard != null) {
+            writer.append(" WHERE ");
+            guard.appendTo(writer);
         }
     }
 
@@ -307,7 +340,7 @@ public final class InsertBuilder {
         }
     }
 
-    private static void appendColumns(SqlWriter writer, Column<?>[] columns) {
+    private static void appendColumns(SqlWriter writer, List<Column<?>> columns) {
         StringJoiner joiner = new StringJoiner(", ");
         for (Column<?> column : columns) {
             joiner.add(Objects.requireNonNull(column, "column").name());

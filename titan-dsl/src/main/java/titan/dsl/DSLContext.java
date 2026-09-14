@@ -117,7 +117,7 @@ public final class DSLContext {
         return new SelectBuilder10<>(dialect, queryFilters(), column1, column2, column3, column4, column5, column6, column7, column8, column9, column10);
     }
 
-    public InsertBuilder insertInto(Table<?> table) { return new InsertBuilder(dialect, table); }
+    public InsertBuilder insertInto(Table<?> table) { return new InsertBuilder(dialect, queryFilters(), table); }
     public UpdateBuilder update(Table<?> table) { return new UpdateBuilder(dialect, queryFilters(), table); }
     public DeleteBuilder deleteFrom(Table<?> table) { return new DeleteBuilder(dialect, queryFilters(), table); }
 

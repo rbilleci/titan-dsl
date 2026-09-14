@@ -110,7 +110,21 @@ public final class FilterPolicy {
         }
     }
 
-    private record TablePlan(List<Term> terms, boolean exempt, List<String> exemptFilters) {
+    /**
+     * Everything resolved for one relation: the read predicate terms plus the write-side view of
+     * them. {@code checked} are standalone value filters bound to a direct column (verifiable and
+     * fillable on INSERT/UPDATE); {@code groupChecks} are {@code anyOf} groups whose bound members
+     * on this relation are all direct columns; {@code uncheckedFilters} are value filters bound
+     * through a path or a lambda, which writes cannot verify.
+     */
+    private record TablePlan(List<Term> terms, boolean exempt, List<String> exemptFilters,
+                             List<Checked> checked, List<List<Checked>> groupChecks,
+                             List<Filter<?>> uncheckedFilters, List<String> writeNotes) {
+
+        static TablePlan exemptPlan() {
+            return new TablePlan(List.of(), true, List.of(), List.of(), List.of(), List.of(), List.of());
+        }
+
         Condition condition(TableRef ref, Scope scope) {
             Condition result = null;
             for (Term term : terms) {
@@ -136,8 +150,18 @@ public final class FilterPolicy {
             for (String name : exemptFilters) {
                 text.append("\n  ").append(name).append(": exempt");
             }
+            if (!writeNotes.isEmpty()) {
+                text.append("\n  write: ").append(String.join("; ", writeNotes));
+            }
             return text.toString();
         }
+    }
+
+    record Checked(Filter<?> filter, Column<?> column) {
+    }
+
+    /** A column an INSERT must add because the scope determines its only admissible value. */
+    record Fill(Column<?> column, Object value) {
     }
 
     private sealed interface Term permits Leaf, Group {
@@ -155,17 +179,8 @@ public final class FilterPolicy {
             if (!filter.requiresValue()) {
                 return binding.apply(ref, null);
             }
-            if (scope == null) {
-                throw new IllegalStateException("Filter '" + filter.name() + "' applies to " + ref
-                        + " but the context has no Scope. Call DSLContext.scoped(Scope) or unscoped().");
-            }
-            Object value = scope.valueOf(filter);
-            if (value == null) {
-                throw new IllegalStateException("Filter '" + filter.name() + "' has no value in the current Scope "
-                        + "for " + ref + ". Add Scope.with(" + filter.name() + ", value) or Scope.skip("
-                        + filter.name() + ").");
-            }
-            return binding.apply(ref, value);
+            Object value = scopeValue(filter, scope, ref);
+            return value == null ? null : binding.apply(ref, value);
         }
 
         @Override
@@ -209,6 +224,7 @@ public final class FilterPolicy {
         @Override
         @SuppressWarnings("unchecked")
         public Condition apply(TableRef ref, Object value) {
+            requireCompatible(value, column, ref);
             Column<Object> qualified = (Column<Object>) ref.col(column);
             if (value instanceof Scope.Values multi) {
                 return qualified.in(multi.values());
@@ -296,6 +312,326 @@ public final class FilterPolicy {
             }
             return text.toString();
         }
+    }
+
+    // ---------------------------------------------------------------- write-side checks
+
+    /**
+     * Validates an INSERT's values against the scope and returns the columns to fill. A value
+     * assigned to a checked column must be within the scope; an unassigned checked column is
+     * filled when the scope holds one value. Group columns need at least one match per row.
+     */
+    List<Fill> checkInsert(TableLike<?> table, Scope scope, List<Column<?>> columns, List<List<Object>> rows) {
+        TablePlan plan = writePlan(table);
+        if (plan.exempt()) {
+            return List.of();
+        }
+        TableRef ref = TableRef.of(table);
+        List<Fill> fills = new ArrayList<>();
+        for (Checked check : plan.checked()) {
+            Object scopeValue = scopeValue(check.filter(), scope, ref);
+            if (scopeValue == null) {
+                continue;
+            }
+            requireCompatible(scopeValue, check.column(), ref);
+            int index = indexOf(columns, check.column());
+            if (index < 0) {
+                if (scopeValue instanceof Scope.Values) {
+                    throw new IllegalStateException("INSERT into " + ref + " must assign " + check.column().name()
+                            + " explicitly: the Scope has several values for filter '" + check.filter().name() + "'.");
+                }
+                fills.add(new Fill(check.column(), scopeValue));
+                continue;
+            }
+            for (List<Object> row : rows) {
+                requireWithinScope(row.get(index), check, scopeValue, ref, "INSERT into ");
+            }
+        }
+        for (List<Checked> group : plan.groupChecks()) {
+            List<Checked> active = new ArrayList<>();
+            List<Object> scopeValues = new ArrayList<>();
+            for (Checked member : group) {
+                Object scopeValue = scopeValue(member.filter(), scope, ref);
+                if (scopeValue != null) {
+                    requireCompatible(scopeValue, member.column(), ref);
+                    active.add(member);
+                    scopeValues.add(scopeValue);
+                }
+            }
+            if (active.isEmpty()) {
+                continue;
+            }
+            for (List<Object> row : rows) {
+                boolean matched = false;
+                for (int i = 0; i < active.size() && !matched; i++) {
+                    int index = indexOf(columns, active.get(i).column());
+                    if (index < 0) {
+                        continue;
+                    }
+                    rejectExpression(row.get(index), active.get(i), ref, "INSERT into ");
+                    matched = withinScope(row.get(index), scopeValues.get(i), active.get(i).column().sqlType());
+                }
+                if (!matched) {
+                    throw new IllegalStateException("INSERT into " + ref + " must assign at least one of "
+                            + columnNames(active) + " to a value within the current scope.");
+                }
+            }
+        }
+        return fills;
+    }
+
+    /**
+     * Validates UPDATE assignments. A checked column may only be set to a value within the scope.
+     * For a group, an assignment that no longer matches is allowed only for rows that stay
+     * visible through an unassigned member; the returned condition selects those rows.
+     */
+    Condition checkUpdate(TableLike<?> table, Scope scope, Map<Column<?>, Object> assignments) {
+        TablePlan plan = writePlan(table);
+        if (plan.exempt()) {
+            return null;
+        }
+        TableRef ref = TableRef.of(table);
+        List<Column<?>> columns = new ArrayList<>(assignments.keySet());
+        List<Object> values = new ArrayList<>(assignments.values());
+        for (Checked check : plan.checked()) {
+            Object scopeValue = scopeValue(check.filter(), scope, ref);
+            if (scopeValue == null) {
+                continue;
+            }
+            requireCompatible(scopeValue, check.column(), ref);
+            int index = indexOf(columns, check.column());
+            if (index >= 0) {
+                requireWithinScope(values.get(index), check, scopeValue, ref, "UPDATE of ");
+            }
+        }
+        Condition extra = null;
+        for (List<Checked> group : plan.groupChecks()) {
+            boolean anyAssigned = false;
+            boolean matched = false;
+            List<Checked> unassigned = new ArrayList<>();
+            List<Object> unassignedValues = new ArrayList<>();
+            for (Checked member : group) {
+                Object scopeValue = scopeValue(member.filter(), scope, ref);
+                if (scopeValue == null) {
+                    continue;
+                }
+                requireCompatible(scopeValue, member.column(), ref);
+                int index = indexOf(columns, member.column());
+                if (index < 0) {
+                    unassigned.add(member);
+                    unassignedValues.add(scopeValue);
+                    continue;
+                }
+                anyAssigned = true;
+                rejectExpression(values.get(index), member, ref, "UPDATE of ");
+                matched |= withinScope(values.get(index), scopeValue, member.column().sqlType());
+            }
+            if (!anyAssigned || matched) {
+                continue;
+            }
+            if (unassigned.isEmpty()) {
+                throw new IllegalStateException("UPDATE of " + ref + " assigns " + columnNames(group)
+                        + " outside the current scope; the rows would become invisible.");
+            }
+            Condition stillVisible = null;
+            for (int i = 0; i < unassigned.size(); i++) {
+                Condition member = new ColumnBinding(unassigned.get(i).column()).apply(ref, unassignedValues.get(i));
+                stillVisible = stillVisible == null ? member : stillVisible.or(member);
+            }
+            extra = extra == null ? stillVisible : extra.and(stillVisible);
+        }
+        return extra;
+    }
+
+    /**
+     * MySQL's {@code ON DUPLICATE KEY UPDATE} takes no WHERE, so the existing row can only be
+     * kept in scope by the unique key itself: every checked column must be part of the declared
+     * conflict target, and filters that are not direct columns cannot be guarded at all.
+     */
+    void checkMysqlUpsert(TableLike<?> table, Scope scope, List<Column<?>> conflictColumns) {
+        TablePlan plan = writePlan(table);
+        if (plan.exempt()) {
+            return;
+        }
+        TableRef ref = TableRef.of(table);
+        for (Checked check : plan.checked()) {
+            if (scopeValue(check.filter(), scope, ref) != null && indexOf(conflictColumns, check.column()) < 0) {
+                throw new IllegalStateException("MySQL ON DUPLICATE KEY UPDATE on " + ref + " needs "
+                        + check.column().name() + " in onConflict(...) and in the matching unique key; "
+                        + "the existing row cannot be checked otherwise.");
+            }
+        }
+        for (Filter<?> filter : plan.uncheckedFilters()) {
+            if (scopeValue(filter, scope, ref) != null) {
+                throw new IllegalStateException("MySQL ON DUPLICATE KEY UPDATE on " + ref + " cannot check the "
+                        + "existing row for filter '" + filter.name() + "' (not a direct column binding); use a "
+                        + "direct column, PostgreSQL, or unscoped() deliberately.");
+            }
+        }
+    }
+
+    /**
+     * {@code INSERT ... SELECT} is accepted only in the copy-within-scope shape: each checked
+     * target column is fed by the same filter's checked column of the source FROM relation, and
+     * the source carries the same scope, so its rows already passed the read predicate.
+     */
+    void checkInsertSelect(TableLike<?> table, Scope scope, List<Column<?>> targetColumns, SelectBuilder source) {
+        TablePlan plan = writePlan(table);
+        if (plan.exempt()) {
+            return;
+        }
+        TableRef ref = TableRef.of(table);
+        for (List<Checked> group : plan.groupChecks()) {
+            for (Checked member : group) {
+                if (scopeValue(member.filter(), scope, ref) != null) {
+                    throw new IllegalStateException("INSERT ... SELECT into " + ref + " cannot check anyOf"
+                            + columnNames(group) + "; use set(...) or values(...).");
+                }
+            }
+        }
+        List<Checked> active = new ArrayList<>();
+        for (Checked check : plan.checked()) {
+            if (scopeValue(check.filter(), scope, ref) != null) {
+                active.add(check);
+            }
+        }
+        if (active.isEmpty()) {
+            return;
+        }
+        if (targetColumns.isEmpty()) {
+            throw new IllegalStateException("INSERT ... SELECT into " + ref + " under a scope requires columns(...).");
+        }
+        QueryFilters sourceFilters = source.filters();
+        if (sourceFilters == null || sourceFilters.policy() != this || !Objects.equals(sourceFilters.scope(), scope)) {
+            throw new IllegalStateException("INSERT ... SELECT into " + ref
+                    + " requires a source query built from the same scoped context.");
+        }
+        TableLike<?> from = source.fromRelation();
+        TableRef fromRef = from == null ? null : TableRef.of(from);
+        TablePlan sourcePlan = fromRef == null ? null : plans.get(TableKey.of(fromRef.relation()));
+        for (Checked check : active) {
+            int index = indexOf(targetColumns, check.column());
+            if (index < 0) {
+                throw new IllegalStateException("INSERT ... SELECT into " + ref + " must include "
+                        + check.column().name() + " in columns(...) and project the source column bound to filter '"
+                        + check.filter().name() + "'.");
+            }
+            Column<?> projected = source.projectedColumn(index);
+            Checked sourceChecked = null;
+            if (sourcePlan != null) {
+                for (Checked candidate : sourcePlan.checked()) {
+                    if (candidate.filter().equals(check.filter())) {
+                        sourceChecked = candidate;
+                    }
+                }
+            }
+            String projectedName = TableRef.terminalIdentifier(projected.name());
+            if (sourceChecked == null || !projectedName.equals(TableRef.terminalIdentifier(sourceChecked.column().name()))) {
+                throw new IllegalStateException("INSERT ... SELECT into " + ref + ": projection " + (index + 1)
+                        + " must be the source FROM relation's column bound to filter '" + check.filter().name() + "'.");
+            }
+            int dot = projected.name().lastIndexOf('.');
+            if (dot >= 0) {
+                String qualifier = projected.name().substring(0, dot);
+                if (!(from instanceof AliasedTable<?> aliased) || !aliased.alias().equals(qualifier)) {
+                    throw new IllegalStateException("INSERT ... SELECT into " + ref + ": " + projected.name()
+                            + " must be qualified by the source FROM alias.");
+                }
+            } else if (source.hasJoins()) {
+                throw new IllegalStateException("INSERT ... SELECT into " + ref + ": qualify " + projectedName
+                        + " with the source FROM alias when the source has joins.");
+            }
+        }
+    }
+
+    private TablePlan writePlan(TableLike<?> table) {
+        TableKey key = TableKey.of(table);
+        TablePlan plan = plans.get(key);
+        if (plan == null) {
+            throw new IllegalStateException("Relation " + key + " is not in the FilterPolicy catalog. Add it to the "
+                    + "catalog and bind or exempt it, or query it through DSLContext.unscoped().");
+        }
+        return plan;
+    }
+
+    /** The scope's value for a filter; {@code null} when the filter is skipped, otherwise never null. */
+    private static Object scopeValue(Filter<?> filter, Scope scope, TableRef ref) {
+        if (scope == null) {
+            throw new IllegalStateException("Filter '" + filter.name() + "' applies to " + ref
+                    + " but the context has no Scope. Call DSLContext.scoped(Scope) or unscoped().");
+        }
+        if (scope.isSkipped(filter)) {
+            return null;
+        }
+        Object value = scope.valueOf(filter);
+        if (value == null) {
+            throw new IllegalStateException("Filter '" + filter.name() + "' has no value in the current Scope "
+                    + "for " + ref + ". Add Scope.with(" + filter.name() + ", value) or Scope.skip("
+                    + filter.name() + ").");
+        }
+        return value;
+    }
+
+    private static void requireCompatible(Object value, Column<?> column, TableRef ref) {
+        if (value instanceof Scope.Values multi) {
+            for (Object element : multi.values()) {
+                requireCompatible(element, column, ref);
+            }
+            return;
+        }
+        if (!SqlTypes.acceptsValue(value, column.sqlType())) {
+            throw new IllegalStateException("Scope value of type " + value.getClass().getSimpleName()
+                    + " cannot bind to column " + TableRef.terminalIdentifier(column.name()) + " (" + column.sqlType()
+                    + ") of " + ref + ".");
+        }
+    }
+
+    private static void requireWithinScope(Object assigned, Checked check, Object scopeValue, TableRef ref, String verb) {
+        rejectExpression(assigned, check, ref, verb);
+        if (!withinScope(assigned, scopeValue, check.column().sqlType())) {
+            throw new IllegalStateException(verb + ref + " assigns " + check.column().name()
+                    + " a value outside the current scope for filter '" + check.filter().name() + "'.");
+        }
+    }
+
+    private static void rejectExpression(Object assigned, Checked check, TableRef ref, String verb) {
+        if (assigned instanceof Column<?>) {
+            throw new IllegalStateException(verb + ref + " assigns " + check.column().name()
+                    + " an expression; a column bound to filter '" + check.filter().name() + "' needs a value.");
+        }
+    }
+
+    private static boolean withinScope(Object assigned, Object scopeValue, SQLType sqlType) {
+        if (assigned == null) {
+            return false;
+        }
+        if (scopeValue instanceof Scope.Values multi) {
+            for (Object candidate : multi.values()) {
+                if (SqlTypes.sameValue(assigned, candidate, sqlType)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        return SqlTypes.sameValue(assigned, scopeValue, sqlType);
+    }
+
+    private static int indexOf(List<Column<?>> columns, Column<?> target) {
+        String name = TableRef.terminalIdentifier(target.name());
+        for (int i = 0; i < columns.size(); i++) {
+            if (TableRef.terminalIdentifier(columns.get(i).name()).equals(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String columnNames(List<Checked> checks) {
+        StringJoiner joiner = new StringJoiner(", ", "(", ")");
+        for (Checked check : checks) {
+            joiner.add(check.column().name());
+        }
+        return joiner.toString();
     }
 
     // ---------------------------------------------------------------- builder
@@ -496,13 +832,28 @@ public final class FilterPolicy {
                 resolved.get(entry.getKey()).putAll(entry.getValue());
             }
 
+            // A filter bound to columns of different SQL types cannot carry one scope value.
+            Map<Filter<?>, Map.Entry<TableKey, Column<?>>> firstColumns = new HashMap<>();
+            for (TableKey key : catalog.keySet()) {
+                for (Map.Entry<Filter<?>, Binding> entry : resolved.get(key).entrySet()) {
+                    if (entry.getValue() instanceof ColumnBinding column) {
+                        Map.Entry<TableKey, Column<?>> first = firstColumns.putIfAbsent(entry.getKey(), Map.entry(key, column.column()));
+                        if (first != null && first.getValue().sqlType() != column.column().sqlType()) {
+                            problems.add("filter '" + entry.getKey().name() + "' binds columns of different SQL types: "
+                                    + first.getKey() + "." + first.getValue().name() + " " + first.getValue().sqlType()
+                                    + ", " + key + "." + column.column().name() + " " + column.column().sqlType());
+                        }
+                    }
+                }
+            }
+
             // Validation: standalone value filters are fail-closed; groups need one member per table.
             Set<Filter<?>> grouped = new HashSet<>();
             groups.forEach(grouped::addAll);
             Map<TableKey, TablePlan> plans = new LinkedHashMap<>();
             for (TableKey key : catalog.keySet()) {
                 if (exemptRelations.contains(key)) {
-                    plans.put(key, new TablePlan(List.of(), true, List.of()));
+                    plans.put(key, TablePlan.exemptPlan());
                     continue;
                 }
                 Map<Filter<?>, Binding> bindings = resolved.get(key);
@@ -543,7 +894,49 @@ public final class FilterPolicy {
                         problems.add(key + ": none of anyOf" + names(group) + " is bound. Bind one member or exempt them.");
                     }
                 }
-                plans.put(key, new TablePlan(List.copyOf(terms), false, List.copyOf(exemptNames)));
+                List<Checked> checked = new ArrayList<>();
+                List<List<Checked>> groupChecks = new ArrayList<>();
+                List<Filter<?>> uncheckedFilters = new ArrayList<>();
+                List<String> writeNotes = new ArrayList<>();
+                for (Filter<?> filter : filters) {
+                    if (!filter.requiresValue() || grouped.contains(filter)) {
+                        continue;
+                    }
+                    Binding binding = bindings.get(filter);
+                    if (binding instanceof ColumnBinding column) {
+                        checked.add(new Checked(filter, column.column()));
+                        writeNotes.add(column.column().name() + " checked, filled when unset");
+                    } else if (binding != null) {
+                        uncheckedFilters.add(filter);
+                        writeNotes.add(filter.name() + " unchecked (" + (binding instanceof PathBinding ? "path" : "custom") + ")");
+                    }
+                }
+                for (List<Filter<?>> group : groups) {
+                    List<Checked> members = new ArrayList<>();
+                    List<Filter<?>> bound = new ArrayList<>();
+                    for (Filter<?> member : group) {
+                        Binding binding = bindings.get(member);
+                        if (binding == null) {
+                            continue;
+                        }
+                        bound.add(member);
+                        if (binding instanceof ColumnBinding column) {
+                            members.add(new Checked(member, column.column()));
+                        }
+                    }
+                    if (bound.isEmpty()) {
+                        continue;
+                    }
+                    if (members.size() == bound.size()) {
+                        groupChecks.add(List.copyOf(members));
+                        writeNotes.add("anyOf" + names(group) + ": " + columnNames(members) + " checked");
+                    } else {
+                        uncheckedFilters.addAll(bound);
+                        writeNotes.add("anyOf" + names(group) + " unchecked (custom)");
+                    }
+                }
+                plans.put(key, new TablePlan(List.copyOf(terms), false, List.copyOf(exemptNames),
+                        List.copyOf(checked), List.copyOf(groupChecks), List.copyOf(uncheckedFilters), List.copyOf(writeNotes)));
             }
 
             if (!problems.isEmpty()) {

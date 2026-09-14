@@ -127,9 +127,15 @@ public final class UpdateBuilder {
         }
 
         Condition effectiveWhere = whereCondition;
-        Condition filter = filters == null ? null : filters.conditionFor(table);
-        if (filter != null) {
-            effectiveWhere = effectiveWhere == null ? filter : effectiveWhere.and(filter);
+        if (filters != null) {
+            Condition filter = filters.conditionFor(table);
+            if (filter != null) {
+                effectiveWhere = effectiveWhere == null ? filter : effectiveWhere.and(filter);
+            }
+            Condition stillVisible = filters.checkUpdate(table, assignments);
+            if (stillVisible != null) {
+                effectiveWhere = effectiveWhere == null ? stillVisible : effectiveWhere.and(stillVisible);
+            }
         }
         if (effectiveWhere != null) {
             writer.append(" WHERE ");
