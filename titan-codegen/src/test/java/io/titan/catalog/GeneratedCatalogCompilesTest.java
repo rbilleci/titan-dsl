@@ -126,6 +126,13 @@ class GeneratedCatalogCompilesTest {
 
             Class<?> enumClass = Class.forName("gen.catalog.titan.enums.AccountsStatusEnum", true, loader);
             assertEquals(2, enumClass.getEnumConstants().length);
+
+            // The registry references every singleton, including the two same-named tables.
+            Class<?> registry = Class.forName("gen.catalog.Catalog", true, loader);
+            List<?> tables = (List<?>) registry.getField("TABLES").get(null);
+            assertEquals(3, tables.size());
+            assertTrue(tables.contains(singleton), "Catalog.TABLES must reference the generated singleton");
+            assertEquals(0, ((List<?>) registry.getField("VIEWS").get(null)).size());
         }
     }
 

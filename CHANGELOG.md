@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add automatic filters: `FilterPolicy` binds `Filter` keys to columns,
+  foreign-key paths, or DSL lambdas for every catalog relation and validates the
+  whole catalog when built; `DSLContext.filters(...)`/`scoped(Scope)` add the
+  predicates to rendered SELECT, UPDATE, and DELETE statements. Generate
+  `Catalog.TABLES`/`Catalog.VIEWS` registries alongside descriptors.
+- Parenthesize the extra predicate of `on(left, right, extra)` joins so an OR
+  inside it no longer swallows the join equality.
 - Update PostgreSQL JDBC to 42.7.13 and MySQL Connector/J to 26.7.0; constrain
   Commons Compress to 1.28.0 in codegen modules without adding DSL runtime dependencies.
 - Align documented driver coordinates and missing-driver suggestions with the

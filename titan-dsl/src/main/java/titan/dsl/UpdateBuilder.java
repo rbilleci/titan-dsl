@@ -13,6 +13,7 @@ import java.util.StringJoiner;
 public final class UpdateBuilder {
 
     private final SqlDialect configuredDialect;
+    private final QueryFilters filters;
 
     private final Table<?> table;
     private final LinkedHashMap<Column<?>, Object> assignments = new LinkedHashMap<>();
@@ -20,11 +21,12 @@ public final class UpdateBuilder {
     private final List<Column<?>> returningColumns = new java.util.ArrayList<>();
 
     UpdateBuilder(Table<?> table) {
-        this(null, table);
+        this(null, null, table);
     }
 
-    UpdateBuilder(SqlDialect dialect, Table<?> table) {
+    UpdateBuilder(SqlDialect dialect, QueryFilters filters, Table<?> table) {
         this.configuredDialect = dialect;
+        this.filters = filters;
         this.table = Objects.requireNonNull(table, "table");
     }
 
@@ -124,9 +126,14 @@ public final class UpdateBuilder {
             first = false;
         }
 
-        if (whereCondition != null) {
+        Condition effectiveWhere = whereCondition;
+        Condition filter = filters == null ? null : filters.conditionFor(table);
+        if (filter != null) {
+            effectiveWhere = effectiveWhere == null ? filter : effectiveWhere.and(filter);
+        }
+        if (effectiveWhere != null) {
             writer.append(" WHERE ");
-            whereCondition.appendTo(writer);
+            effectiveWhere.appendTo(writer);
         }
 
         if (!returningColumns.isEmpty()) {

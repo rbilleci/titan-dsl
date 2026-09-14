@@ -6,7 +6,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * Facade over the four catalog generators: validates the schema for name-mangling collisions
+ * Facade over the catalog generators: validates the schema for name-mangling collisions
  * first ({@link CatalogCollisionDetector}, audit G-8), then produces all generated sources in a
  * single map, refusing duplicate output paths instead of silently overwriting.
  */
@@ -20,6 +20,7 @@ public final class CatalogGenerator {
         mergeInto(output, new RowRecordGenerator().generate(schema, targetPackage));
         mergeInto(output, new ViewDescriptorGenerator().generate(schema, targetPackage));
         mergeInto(output, new EnumTypeGenerator().generate(schema, targetPackage));
+        mergeInto(output, new CatalogRegistryGenerator().generate(schema, targetPackage));
         return output;
     }
 

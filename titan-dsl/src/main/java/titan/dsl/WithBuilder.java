@@ -10,14 +10,16 @@ public final class WithBuilder {
 
     private final boolean recursive;
     private final SqlDialect dialect;
+    private final QueryFilters filters;
     private final CommonTableExpression<?>[] expressions;
 
     WithBuilder(boolean recursive, CommonTableExpression<?>... expressions) {
-        this(null, recursive, expressions);
+        this(null, null, recursive, expressions);
     }
 
-    WithBuilder(SqlDialect dialect, boolean recursive, CommonTableExpression<?>... expressions) {
+    WithBuilder(SqlDialect dialect, QueryFilters filters, boolean recursive, CommonTableExpression<?>... expressions) {
         this.dialect = dialect;
+        this.filters = filters;
         this.recursive = recursive;
         this.expressions = Objects.requireNonNull(expressions, "expressions");
         if (expressions.length == 0) {
@@ -29,6 +31,6 @@ public final class WithBuilder {
     }
 
     public SelectBuilder select(Column<?>... columns) {
-        return new SelectBuilder(dialect, columns).with(recursive, expressions);
+        return new SelectBuilder(dialect, filters, columns).with(recursive, expressions);
     }
 }

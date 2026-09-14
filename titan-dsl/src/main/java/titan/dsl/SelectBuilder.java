@@ -23,13 +23,14 @@ import java.util.function.BiConsumer;
 public class SelectBuilder {
 
     private final SqlDialect configuredDialect;
+    private final QueryFilters filters;
 
     private final List<Column<?>> columns;
     private boolean distinct;
     private boolean withRecursive;
     private final List<CommonTableExpression<?>> commonTableExpressions = new ArrayList<>();
     private TableLike<?> from;
-    private final List<SqlFragment> joins = new ArrayList<>();
+    private final List<JoinSpec> joins = new ArrayList<>();
     private Condition where;
     private final List<String> groupBy = new ArrayList<>();
     private Condition having;
@@ -42,11 +43,16 @@ public class SelectBuilder {
     private boolean noWait;
 
     SelectBuilder(Column<?>... columns) {
-        this(null, columns);
+        this(null, null, columns);
     }
 
     SelectBuilder(SqlDialect dialect, Column<?>... columns) {
+        this(dialect, null, columns);
+    }
+
+    SelectBuilder(SqlDialect dialect, QueryFilters filters, Column<?>... columns) {
         this.configuredDialect = dialect;
+        this.filters = filters;
         if (columns == null || columns.length == 0) {
             throw new IllegalArgumentException("select requires at least one column");
         }
@@ -60,6 +66,7 @@ public class SelectBuilder {
      */
     private SelectBuilder(SelectBuilder source) {
         this.configuredDialect = source.configuredDialect;
+        this.filters = source.filters;
         this.columns = source.columns;
         this.distinct = source.distinct;
         this.withRecursive = source.withRecursive;
@@ -140,7 +147,7 @@ public class SelectBuilder {
         ensureFromBeforeJoin();
         TableLike<?> validated = Objects.requireNonNull(table, "table");
         registerInlineCte(validated);
-        joins.add(SqlFragment.of("CROSS JOIN " + relationSql(validated)));
+        joins.add(new JoinSpec("CROSS JOIN", validated, null, null));
         return this;
     }
 
@@ -710,14 +717,35 @@ public class SelectBuilder {
 
         writer.append(" FROM ").append(relationSql(from));
 
-        for (SqlFragment join : joins) {
-            writer.append(' ');
-            join.appendTo(writer);
+        // Automatic filters are resolved at render time and never stored on the builder
+        // (audit D-6). LEFT JOIN filters belong in ON so the join stays outer; all others go
+        // to WHERE.
+        Condition effectiveWhere = where;
+        List<Condition> onFilters = null;
+        if (filters != null) {
+            Condition fromFilter = automaticFilterFor(from);
+            if (fromFilter != null) {
+                effectiveWhere = effectiveWhere == null ? fromFilter : effectiveWhere.and(fromFilter);
+            }
+            onFilters = new ArrayList<>(joins.size());
+            for (JoinSpec join : joins) {
+                Condition filter = join.relation() == null ? null : automaticFilterFor(join.relation());
+                if (filter != null && !join.leftOuter()) {
+                    effectiveWhere = effectiveWhere == null ? filter : effectiveWhere.and(filter);
+                    filter = null;
+                }
+                onFilters.add(filter);
+            }
         }
 
-        if (where != null) {
+        for (int i = 0; i < joins.size(); i++) {
+            writer.append(' ');
+            joins.get(i).appendTo(writer, onFilters == null ? null : onFilters.get(i));
+        }
+
+        if (effectiveWhere != null) {
             writer.append(" WHERE ");
-            where.appendTo(writer);
+            effectiveWhere.appendTo(writer);
         }
 
         if (!groupBy.isEmpty()) {
@@ -732,6 +760,10 @@ public class SelectBuilder {
             writer.append(" HAVING ");
             having.appendTo(writer);
         }
+    }
+
+    private Condition automaticFilterFor(TableLike<?> relation) {
+        return filters == null ? null : filters.conditionFor(relation);
     }
 
     private void registerInlineCte(TableLike<?> table) {
@@ -788,6 +820,39 @@ public class SelectBuilder {
     private record SetOperation(String operator, SelectBuilder query) {
     }
 
+    /**
+     * One FROM-clause join kept in structured form so automatic filters can be added to a LEFT
+     * JOIN's ON clause with the user's condition parenthesized. {@code raw} is set only for
+     * lateral joins, which have no relation descriptor.
+     */
+    private record JoinSpec(String joinType, TableLike<?> relation, SqlFragment on, SqlFragment raw) {
+
+        boolean leftOuter() {
+            return "LEFT JOIN".equals(joinType);
+        }
+
+        void appendTo(SqlWriter writer, Condition filter) {
+            if (raw != null) {
+                raw.appendTo(writer);
+                return;
+            }
+            writer.append(joinType).append(' ').append(relationSql(relation));
+            if (on == null) {
+                return;
+            }
+            writer.append(" ON ");
+            if (filter == null) {
+                on.appendTo(writer);
+                return;
+            }
+            writer.append('(');
+            on.appendTo(writer);
+            writer.append(") AND (");
+            filter.appendTo(writer);
+            writer.append(')');
+        }
+    }
+
     private enum LockMode {
         FOR_UPDATE("FOR UPDATE"),
         FOR_SHARE("FOR SHARE");
@@ -814,7 +879,7 @@ public class SelectBuilder {
             if (alias == null || alias.isBlank()) {
                 throw new IllegalArgumentException("lateral join alias must not be blank");
             }
-            joins.add(SqlFragment.of("JOIN LATERAL (", subquery, ") AS " + alias));
+            joins.add(new JoinSpec(null, null, null, SqlFragment.of("JOIN LATERAL (", subquery, ") AS " + alias)));
             return SelectBuilder.this;
         }
     }
@@ -829,8 +894,7 @@ public class SelectBuilder {
         }
 
         public SelectBuilder on(Condition condition) {
-            joins.add(SqlFragment.of(joinType + " " + relationSql(table) + " ON ",
-                    Objects.requireNonNull(condition, "condition")));
+            joins.add(new JoinSpec(joinType, table, SqlFragment.of(Objects.requireNonNull(condition, "condition")), null));
             return SelectBuilder.this;
         }
 
@@ -846,8 +910,7 @@ public class SelectBuilder {
                         + leftColumn.name() + " is " + leftType
                         + " but " + rightColumn.name() + " is " + rightType);
             }
-            joins.add(SqlFragment.of(joinType + " " + relationSql(table) + " ON "
-                    + leftColumn.name() + " = " + rightColumn.name()));
+            joins.add(new JoinSpec(joinType, table, SqlFragment.of(leftColumn.name() + " = " + rightColumn.name()), null));
             return SelectBuilder.this;
         }
 
@@ -864,8 +927,9 @@ public class SelectBuilder {
                         + leftColumn.name() + " is " + leftType
                         + " but " + rightColumn.name() + " is " + rightType);
             }
-            joins.add(SqlFragment.of(joinType + " " + relationSql(table) + " ON "
-                    + leftColumn.name() + " = " + rightColumn.name() + " AND ", extra));
+            // Parenthesized: an OR inside `extra` must not swallow the equality.
+            joins.add(new JoinSpec(joinType, table,
+                    SqlFragment.of(leftColumn.name() + " = " + rightColumn.name() + " AND (", extra, ")"), null));
             return SelectBuilder.this;
         }
 
@@ -895,7 +959,7 @@ public class SelectBuilder {
                 }
                 predicates.add(localColumn.name() + " = " + referencedColumn.name());
             }
-            joins.add(SqlFragment.of(joinType + " " + relationSql(table) + " ON " + predicates));
+            joins.add(new JoinSpec(joinType, table, SqlFragment.of(predicates.toString()), null));
             return SelectBuilder.this;
         }
     }
