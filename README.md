@@ -572,7 +572,7 @@ Filter binds (`[42, 9, userId]`) follow any binds from your own `where(...)`.
   to UPDATE/DELETE targets. A `LEFT JOIN` receives its filter in `ON`; other
   joins receive it in `WHERE`, so RIGHT and FULL joins lose unmatched rows from
   the filtered side. Structured subqueries and `db.name(...)` CTEs render with
-  their own filters; raw SQL is not inspected, and INSERT values are not filled in.
+  their own filters; raw SQL is not inspected.
 - `db.unscoped()` applies no filters, and so do queries built with the static
   `DSL.select(...)` factories, including as subqueries or set-operation operands.
   `filters(policy, supplier)` reads the scope when a builder is created, for
@@ -580,6 +580,28 @@ Filter binds (`[42, 9, userId]`) follow any binds from your own `where(...)`.
 - Path subqueries alias their tables `_tf1`, `_tf2`, ...; avoid that prefix.
   Only `bind(table, Filter<T>, Column<T>)` is checked at compile time; column
   conventions and lambdas are checked by the database.
+
+Writes follow the same rule as reads: a statement may only produce rows the
+scope could read.
+
+- A column bound directly to a standalone filter is *checked*: an INSERT or
+  `set(...)` value must equal the scope value (or be one of `withAny`), an
+  expression is rejected, and an INSERT that omits the column gets it filled
+  from a single-valued scope. `anyOf` columns need at least one member in scope.
+- An UPDATE that moves an `anyOf` member out of scope affects only rows that
+  stay visible through another member; the rendered WHERE carries that test.
+- PostgreSQL upserts render `DO UPDATE SET ... WHERE <scope>`, so a conflict
+  with another scope's row updates nothing. MySQL's `ON DUPLICATE KEY UPDATE`
+  has no WHERE: checked columns must be in `onConflict(...)` and in the unique
+  key, and tables without a direct column binding cannot be upserted in scope.
+- `INSERT ... SELECT` is accepted only when each checked column is projected
+  from the same filter's column of the source FROM relation, built from the
+  same scoped context.
+- Path and lambda bindings are not checked on writes; `explain()` reports them
+  as `unchecked`. Enforce those in the schema, with a composite foreign key that
+  carries the scope column, or with database row-level security.
+- A scope value must be compatible with the bound column's SQL type, and one
+  filter cannot bind columns of different SQL types; both are reported.
 
 Hand-written descriptors can be listed directly:
 `FilterPolicy.builder(new Users(), new Orders())`.

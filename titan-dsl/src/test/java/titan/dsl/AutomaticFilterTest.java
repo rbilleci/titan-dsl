@@ -331,7 +331,7 @@ class AutomaticFilterTest {
     // ---------------------------------------------------------------- DML
 
     @Test
-    void updateAndDeleteAreFilteredInsertIsNot() {
+    void updateDeleteAndInsertAreScoped() {
         var db = tenant42();
         var delete = db.deleteFrom(ORDERS).where(ORDERS.ID.eq(8L)).render();
         assertEquals("DELETE FROM app.orders WHERE (id = ?) AND (app.orders.tenant_id = ?)", delete.sql());
@@ -341,7 +341,7 @@ class AutomaticFilterTest {
         assertEquals("UPDATE app.orders SET org_id = ? WHERE app.orders.tenant_id = ?", update.sql());
         assertEquals(List.of(1L, 42L), values(update));
 
-        assertEquals("INSERT INTO app.orders (id) VALUES (?)", db.insertInto(ORDERS).set(ORDERS.ID, 1L).render().sql());
+        assertEquals("INSERT INTO app.orders (id, tenant_id) VALUES (?, ?)", db.insertInto(ORDERS).set(ORDERS.ID, 1L).render().sql());
     }
 
     // ---------------------------------------------------------------- fail-closed behavior
@@ -407,10 +407,11 @@ class AutomaticFilterTest {
     @Test
     void explainDescribesEveryResolvedBinding() {
         var policy = tenantPolicy();
-        assertEquals("app.orders\n  tenant: column tenant_id", policy.explain(ORDERS));
-        assertEquals("app.order_lines\n  tenant: EXISTS via order_id -> app.orders (column tenant_id)", policy.explain(ORDER_LINES));
-        assertEquals("app.shipment_events\n  tenant: EXISTS via shipment_id -> app.shipments order_id -> app.orders (column tenant_id) [derived]",
-                policy.explain(SHIPMENT_EVENTS));
+        assertEquals("app.orders\n  tenant: column tenant_id\n  write: tenant_id checked, filled when unset", policy.explain(ORDERS));
+        assertEquals("app.order_lines\n  tenant: EXISTS via order_id -> app.orders (column tenant_id)\n  write: tenant unchecked (path)",
+                policy.explain(ORDER_LINES));
+        assertEquals("app.shipment_events\n  tenant: EXISTS via shipment_id -> app.shipments order_id -> app.orders (column tenant_id)"
+                + " [derived]\n  write: tenant unchecked (path)", policy.explain(SHIPMENT_EVENTS));
         assertEquals("app.countries: exempt", policy.explain(COUNTRIES));
         assertTrue(policy.explain().contains("app.customers\n  tenant: column tenant_id"));
         assertFalse(policy.explain().contains("not in catalog"));
@@ -444,7 +445,8 @@ class AutomaticFilterTest {
                 () -> db.scoped(Scope.of(TENANT, 42L).withAny(ORG, List.of(1L, 2L))).select(CUSTOMERS.ID).from(CUSTOMERS).render());
         assertTrue(error.getMessage().contains("Scope.withAny"), error.getMessage());
 
-        assertEquals("app.orders\n  tenant: column tenant_id\n  live: custom predicate\n  org: exempt", policy.explain(ORDERS));
+        assertEquals("app.orders\n  tenant: column tenant_id\n  live: custom predicate\n  org: exempt"
+                + "\n  write: tenant_id checked, filled when unset", policy.explain(ORDERS));
     }
 
     @Test

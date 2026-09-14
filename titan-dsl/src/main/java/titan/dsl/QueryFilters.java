@@ -1,5 +1,7 @@
 package titan.dsl;
 
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 /**
@@ -16,8 +18,32 @@ final class QueryFilters {
         this.scope = scope;
     }
 
-    /** The filter condition for one relation, or {@code null} when nothing applies. */
+    FilterPolicy policy() {
+        return policy;
+    }
+
+    Scope scope() {
+        return scope;
+    }
+
+    /** The read predicate for one relation, or {@code null} when nothing applies. */
     Condition conditionFor(TableLike<?> relation) {
         return policy.conditionFor(relation, scope);
+    }
+
+    List<FilterPolicy.Fill> checkInsert(TableLike<?> table, List<Column<?>> columns, List<List<Object>> rows) {
+        return policy.checkInsert(table, scope, columns, rows);
+    }
+
+    Condition checkUpdate(TableLike<?> table, Map<Column<?>, Object> assignments) {
+        return policy.checkUpdate(table, scope, assignments);
+    }
+
+    void checkMysqlUpsert(TableLike<?> table, List<Column<?>> conflictColumns) {
+        policy.checkMysqlUpsert(table, scope, conflictColumns);
+    }
+
+    void checkInsertSelect(TableLike<?> table, List<Column<?>> targetColumns, SelectBuilder source) {
+        policy.checkInsertSelect(table, scope, targetColumns, source);
     }
 }

@@ -100,6 +100,16 @@ public final class Scope {
     }
 
     @Override
+    public boolean equals(Object other) {
+        return other instanceof Scope scope && values.equals(scope.values) && skipped.equals(scope.skipped);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(values, skipped);
+    }
+
+    @Override
     public String toString() {
         return "Scope" + values + (skipped.isEmpty() ? "" : " skip" + skipped);
     }

@@ -1,20 +1,12 @@
 package titan.dsl;
 
 import java.lang.reflect.RecordComponent;
-import java.math.BigDecimal;
-import java.time.Instant;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
-import java.time.OffsetDateTime;
-import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.StringJoiner;
-import java.util.UUID;
 import java.util.function.BiConsumer;
 
 /**
@@ -442,7 +434,7 @@ public class SelectBuilder {
                 throw new IllegalArgumentException(
                         "fetchInto could not map record component '" + component.getName() + "' by column name");
             }
-            if (!isCompatible(component.getType(), projected.sqlType())) {
+            if (!SqlTypes.isCompatible(component.getType(), projected.sqlType())) {
                 throw new IllegalArgumentException(
                         "fetchInto type mismatch for component '" + component.getName() + "': "
                                 + component.getType().getSimpleName() + " is not compatible with "
@@ -632,58 +624,20 @@ public class SelectBuilder {
         }
     }
 
-    private static boolean isCompatible(Class<?> javaType, SQLType sqlType) {
-        Class<?> boxed = box(javaType);
-        return switch (sqlType) {
-            case INTEGER -> boxed == Integer.class;
-            case BIGINT -> boxed == Long.class;
-            case SMALLINT -> boxed == Short.class;
-            case TINYINT -> boxed == Byte.class || boxed == Boolean.class;
-            case BOOLEAN -> boxed == Boolean.class;
-            case REAL -> boxed == Float.class;
-            case DOUBLE -> boxed == Double.class;
-            case DECIMAL, NUMERIC -> boxed == BigDecimal.class;
-            case VARCHAR, TEXT, CHAR, ENUM -> boxed == String.class;
-            case DATE -> boxed == LocalDate.class;
-            case TIME -> boxed == LocalTime.class;
-            case TIMESTAMP -> boxed == LocalDateTime.class;
-            case TIMESTAMP_TZ -> boxed == Instant.class
-                    || boxed == ZonedDateTime.class
-                    || boxed == OffsetDateTime.class;
-            case UUID -> boxed == UUID.class;
-            case JSON, UNKNOWN -> true;
-        };
+    Column<?> projectedColumn(int index) {
+        return columns.get(index);
     }
 
-    private static Class<?> box(Class<?> type) {
-        if (!type.isPrimitive()) {
-            return type;
-        }
-        if (type == int.class) {
-            return Integer.class;
-        }
-        if (type == long.class) {
-            return Long.class;
-        }
-        if (type == short.class) {
-            return Short.class;
-        }
-        if (type == byte.class) {
-            return Byte.class;
-        }
-        if (type == boolean.class) {
-            return Boolean.class;
-        }
-        if (type == float.class) {
-            return Float.class;
-        }
-        if (type == double.class) {
-            return Double.class;
-        }
-        if (type == char.class) {
-            return Character.class;
-        }
-        return type;
+    TableLike<?> fromRelation() {
+        return from;
+    }
+
+    boolean hasJoins() {
+        return !joins.isEmpty();
+    }
+
+    QueryFilters filters() {
+        return filters;
     }
 
     private void appendSingleSelect(SqlWriter writer) {
