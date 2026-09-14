@@ -52,10 +52,26 @@ final class SqlTypes {
         if (left instanceof Number a && right instanceof Number b) {
             return switch (sqlType) {
                 case TINYINT, SMALLINT, INTEGER, BIGINT -> a.longValue() == b.longValue();
-                default -> new BigDecimal(a.toString()).compareTo(new BigDecimal(b.toString())) == 0;
+                default -> {
+                    BigDecimal x = toBigDecimal(a);
+                    BigDecimal y = toBigDecimal(b);
+                    yield x != null && y != null && x.compareTo(y) == 0;
+                }
             };
         }
         return Objects.equals(enumName(left), enumName(right));
+    }
+
+    /** {@code null} for NaN and infinities, which no SQL numeric column can hold. */
+    private static BigDecimal toBigDecimal(Number number) {
+        if (number instanceof BigDecimal decimal) {
+            return decimal;
+        }
+        if (number instanceof Double || number instanceof Float) {
+            double value = number.doubleValue();
+            return Double.isFinite(value) ? BigDecimal.valueOf(value) : null;
+        }
+        return new BigDecimal(number.toString());
     }
 
     private static Object enumName(Object value) {

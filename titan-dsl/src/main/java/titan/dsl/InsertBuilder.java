@@ -249,21 +249,13 @@ public final class InsertBuilder {
             throw new IllegalStateException("onConflict(...).doUpdate().set(...) requires at least one set(...) assignment");
         }
         // The existing row an upsert updates must be visible (USING) and stay visible (WITH CHECK).
-        // PostgreSQL takes that as a DO UPDATE ... WHERE; MySQL has no such clause, so the unique
-        // key itself must carry the checked columns.
+        // PostgreSQL takes that as DO UPDATE ... WHERE; MySQL has no such clause, so each
+        // assignment becomes IF(<guard>, <new value>, <column>) and a foreign row is left as is.
         Condition guard = null;
         if (filters != null) {
+            Condition existing = filters.conditionFor(table);
             Condition stillVisible = filters.checkUpdate(table, conflictAction.assignments);
-            if (writer.dialect() == SqlDialect.MYSQL) {
-                filters.checkMysqlUpsert(table, conflictAction.columns);
-                if (stillVisible != null) {
-                    throw new IllegalStateException("MySQL ON DUPLICATE KEY UPDATE on " + qualifiedName(table)
-                            + " cannot guard an anyOf(...) assignment that leaves the current scope.");
-                }
-            } else {
-                Condition existing = filters.conditionFor(table);
-                guard = existing == null ? stillVisible : stillVisible == null ? existing : existing.and(stillVisible);
-            }
+            guard = existing == null ? stillVisible : stillVisible == null ? existing : existing.and(stillVisible);
         }
         if (writer.dialect() == SqlDialect.POSTGRESQL) {
             StringJoiner conflictColumns = new StringJoiner(", ");
@@ -274,16 +266,26 @@ public final class InsertBuilder {
         } else {
             writer.append(" ON DUPLICATE KEY UPDATE ");
         }
+        boolean mysqlGuard = guard != null && writer.dialect() == SqlDialect.MYSQL;
         boolean first = true;
         for (Map.Entry<Column<?>, Object> assignment : conflictAction.assignments.entrySet()) {
             if (!first) {
                 writer.append(", ");
             }
-            writer.append(assignment.getKey().name()).append(" = ");
+            String column = assignment.getKey().name();
+            writer.append(column).append(" = ");
+            if (mysqlGuard) {
+                writer.append("IF(");
+                guard.appendTo(writer);
+                writer.append(", ");
+            }
             UpdateBuilder.appendAssignmentValue(writer, assignment.getKey(), assignment.getValue());
+            if (mysqlGuard) {
+                writer.append(", ").append(column).append(')');
+            }
             first = false;
         }
-        if (guard != null) {
+        if (guard != null && writer.dialect() == SqlDialect.POSTGRESQL) {
             writer.append(" WHERE ");
             guard.appendTo(writer);
         }

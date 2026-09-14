@@ -636,6 +636,10 @@ public class SelectBuilder {
         return !joins.isEmpty();
     }
 
+    boolean hasSetOperations() {
+        return !setOperations.isEmpty();
+    }
+
     QueryFilters filters() {
         return filters;
     }

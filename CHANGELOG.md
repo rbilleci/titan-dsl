@@ -8,10 +8,14 @@
   predicates to rendered SELECT, UPDATE, and DELETE statements. Generate
   `Catalog.TABLES`/`Catalog.VIEWS` registries alongside descriptors.
 - Enforce write-side scope checks: directly bound columns are verified and
-  filled on INSERT, guarded on UPDATE and PostgreSQL upserts, MySQL upserts must
-  carry them in the conflict target, and `INSERT ... SELECT` is limited to the
-  copy-within-scope shape. Reject scope values and mixed column bindings whose
-  SQL types disagree.
+  filled on INSERT, guarded on UPDATE, and upserts guard the existing row
+  (PostgreSQL `DO UPDATE ... WHERE`, MySQL `IF(...)` assignments);
+  `INSERT ... SELECT` is limited to the copy-within-scope shape and rejects set
+  operations. Reject scope values and mixed column bindings whose SQL types
+  disagree. Validate the rendered shapes against PostgreSQL and MySQL in
+  `integrationTest`.
+- Read public descriptor fields of package-private table classes declared
+  outside `titan.dsl` (`selectFrom` and filter policies).
 - Parenthesize the extra predicate of `on(left, right, extra)` joins so an OR
   inside it no longer swallows the join equality.
 - Update PostgreSQL JDBC to 42.7.13 and MySQL Connector/J to 26.7.0; constrain

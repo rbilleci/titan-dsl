@@ -39,10 +39,6 @@ final class QueryFilters {
         return policy.checkUpdate(table, scope, assignments);
     }
 
-    void checkMysqlUpsert(TableLike<?> table, List<Column<?>> conflictColumns) {
-        policy.checkMysqlUpsert(table, scope, conflictColumns);
-    }
-
     void checkInsertSelect(TableLike<?> table, List<Column<?>> targetColumns, SelectBuilder source) {
         policy.checkInsertSelect(table, scope, targetColumns, source);
     }
