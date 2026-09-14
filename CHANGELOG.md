@@ -16,6 +16,9 @@
   `integrationTest`.
 - Read public descriptor fields of package-private table classes declared
   outside `titan.dsl` (`selectFrom` and filter policies).
+- Reject `set`, `columns`, `values`, and `select` on an INSERT after
+  `onConflict(...)`: a second chained `set` after `doUpdate().set(...)` silently
+  became an inserted column instead of a conflict assignment.
 - Parenthesize the extra predicate of `on(left, right, extra)` joins so an OR
   inside it no longer swallows the join equality.
 - Update PostgreSQL JDBC to 42.7.13 and MySQL Connector/J to 26.7.0; constrain

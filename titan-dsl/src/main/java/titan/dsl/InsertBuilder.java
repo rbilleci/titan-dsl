@@ -41,12 +41,14 @@ public final class InsertBuilder {
     }
 
     public <T> InsertBuilder set(Column<T> column, T value) {
+        ensureNoConflictAction("set(...)");
         ensureNoValuesOrSelect();
         assignments.put(Objects.requireNonNull(column, "column"), value);
         return this;
     }
 
     public InsertBuilder columns(Column<?>... columns) {
+        ensureNoConflictAction("columns(...)");
         if (!assignments.isEmpty()) {
             throw new IllegalStateException("columns(...) cannot be mixed with set(...)");
         }
@@ -61,6 +63,7 @@ public final class InsertBuilder {
     }
 
     public InsertBuilder values(Object... values) {
+        ensureNoConflictAction("values(...)");
         if (!assignments.isEmpty()) {
             throw new IllegalStateException("values(...) cannot be mixed with set(...)");
         }
@@ -78,6 +81,7 @@ public final class InsertBuilder {
     }
 
     public InsertBuilder select(SelectBuilder selectBuilder) {
+        ensureNoConflictAction("select(...)");
         if (!assignments.isEmpty()) {
             throw new IllegalStateException("select(...) cannot be mixed with set(...)");
         }
@@ -355,6 +359,18 @@ public final class InsertBuilder {
             return table.schema() + '.' + table.name();
         }
         return table.name();
+    }
+
+    /**
+     * {@code DoUpdateStep.set} returns this builder so the chain can end in {@code render()},
+     * which makes a second chained {@code set} land here and silently insert a column instead of
+     * assigning it on conflict. Refuse every INSERT-side mutation once a conflict action exists.
+     */
+    private void ensureNoConflictAction(String method) {
+        if (conflictAction != null) {
+            throw new IllegalStateException(method + " cannot follow onConflict(...): conflict assignments belong on "
+                    + "doUpdate(), and inserted columns must be declared before it");
+        }
     }
 
     private void ensureNoValuesOrSelect() {
