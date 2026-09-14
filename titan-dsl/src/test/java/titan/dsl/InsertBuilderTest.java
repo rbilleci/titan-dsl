@@ -72,6 +72,23 @@ class InsertBuilderTest {
     }
 
     @Test
+    void insertMutationsAfterOnConflictAreRejected() {
+        var upsert = DSL.insertInto(ACCOUNTS).set(ACCOUNTS.EMAIL, "ada@example.com")
+                .onConflict(ACCOUNTS.EMAIL).doUpdate().set(ACCOUNTS.ACTIVE, true);
+
+        var chained = assertThrows(IllegalStateException.class, () -> upsert.set(ACCOUNTS.ACTIVE, false));
+        assertEquals("set(...) cannot follow onConflict(...): conflict assignments belong on doUpdate(), "
+                + "and inserted columns must be declared before it", chained.getMessage());
+        assertThrows(IllegalStateException.class, () -> upsert.columns(ACCOUNTS.EMAIL));
+        assertThrows(IllegalStateException.class, () -> upsert.values("x"));
+        assertThrows(IllegalStateException.class, () -> upsert.select(DSL.select(ACCOUNTS.EMAIL).from(ACCOUNTS)));
+
+        // The upsert itself is intact: only the misplaced calls were refused.
+        assertEquals("INSERT INTO public.accounts (email) VALUES ('ada@example.com')"
+                + " ON CONFLICT (email) DO UPDATE SET active = TRUE", upsert.toSql(SqlDialect.POSTGRESQL));
+    }
+
+    @Test
     void onConflictDoUpdateRendersExpectedSql() {
         String sql = DSL.insertInto(ACCOUNTS)
                 .set(ACCOUNTS.EMAIL, "ada@example.com")

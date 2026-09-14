@@ -516,6 +516,10 @@ The database must have the appropriate uniqueness constraint. MySQL considers
 its unique keys rather than an explicit conflict target. INSERT SELECT,
 expression-valued assignments, and PostgreSQL RETURNING are also available;
 review captured expression/literal behavior when supplying calculated values.
+Conflict assignments belong on `doUpdate()`: `set`, `columns`, `values`, and
+`select` are rejected after `onConflict(...)`. Several conflict assignments
+currently need the `doUpdate()` step held in a variable; a fluent form is
+tracked in [#6](https://github.com/rbilleci/titan-dsl/issues/6).
 
 ## Automatic filters
 
