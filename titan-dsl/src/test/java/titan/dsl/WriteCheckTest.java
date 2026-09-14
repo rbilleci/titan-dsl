@@ -173,20 +173,36 @@ class WriteCheckTest {
     }
 
     @Test
-    void mysqlUpsertNeedsCheckedColumnsInTheConflictTarget() {
+    void mysqlUpsertGuardsEachAssignmentWithIf() {
         var db = tenant42(SqlDialect.MYSQL);
-        var missing = assertThrows(IllegalStateException.class, () -> db.insertInto(ORDERS).set(ORDERS.ID, 7L)
-                .onConflict(ORDERS.ID).doUpdate().set(ORDERS.ORG_ID, 1L).render());
-        assertTrue(missing.getMessage().contains("needs tenant_id in onConflict(...)"), missing.getMessage());
+        var upsert = db.insertInto(ORDERS).set(ORDERS.ID, 7L).onConflict(ORDERS.ID)
+                .doUpdate().set(ORDERS.ORG_ID, 1L).render();
+        assertEquals("INSERT INTO app.orders (id, tenant_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE"
+                + " org_id = IF(app.orders.tenant_id = ?, ?, org_id)", upsert.sql());
+        assertEquals(List.of(7L, 42L, 42L, 1L), values(upsert));
 
-        assertEquals("INSERT INTO app.orders (id, tenant_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE org_id = ?",
-                db.insertInto(ORDERS).set(ORDERS.ID, 7L).onConflict(ORDERS.ID, ORDERS.TENANT_ID)
-                        .doUpdate().set(ORDERS.ORG_ID, 1L).render().sql());
+        var path = db.insertInto(ORDER_LINES).set(ORDER_LINES.ID, 1L).set(ORDER_LINES.ORDER_ID, 5L)
+                .onConflict(ORDER_LINES.ID).doUpdate().set(ORDER_LINES.PRODUCT_ID, 2L).render();
+        assertEquals("INSERT INTO app.order_lines (id, order_id) VALUES (?, ?) ON DUPLICATE KEY UPDATE product_id = IF(EXISTS"
+                + " (SELECT 1 FROM app.orders AS _tf1 WHERE (_tf1.id = app.order_lines.order_id) AND (_tf1.tenant_id = ?)), ?, product_id)",
+                path.sql());
 
-        var path = assertThrows(IllegalStateException.class, () -> db.insertInto(ORDER_LINES)
-                .set(ORDER_LINES.ID, 1L).set(ORDER_LINES.ORDER_ID, 5L)
-                .onConflict(ORDER_LINES.ID).doUpdate().set(ORDER_LINES.PRODUCT_ID, 2L).render());
-        assertTrue(path.getMessage().contains("cannot check the existing row for filter 'tenant'"), path.getMessage());
+        var expression = db.insertInto(ORDERS).set(ORDERS.ID, 7L).onConflict(ORDERS.ID)
+                .doUpdate().set(ORDERS.ORG_ID, ORDERS.ORG_ID.add(1)).render();
+        assertTrue(expression.sql().endsWith("org_id = IF(app.orders.tenant_id = ?, (org_id + 1), org_id)"), expression.sql());
+    }
+
+    @Test
+    void insertSelectRejectsSetOperationsAndShortProjections() {
+        var db = tenant42(SqlDialect.POSTGRESQL);
+        var union = assertThrows(IllegalStateException.class, () -> db.insertInto(ORDERS).columns(ORDERS.ID, ORDERS.TENANT_ID)
+                .select(db.select(ORDERS.ID, ORDERS.TENANT_ID).from(ORDERS)
+                        .unionAll(db.unscoped().select(ORDERS.ID, ORDERS.TENANT_ID).from(ORDERS))).render());
+        assertTrue(union.getMessage().contains("UNION/INTERSECT/EXCEPT"), union.getMessage());
+
+        var narrow = assertThrows(IllegalStateException.class, () -> db.insertInto(ORDERS).columns(ORDERS.ID, ORDERS.TENANT_ID)
+                .select(db.select(ORDERS.ID).from(ORDERS)).render());
+        assertTrue(narrow.getMessage().contains("projects 1 columns for 2 target columns"), narrow.getMessage());
     }
 
     // ---------------------------------------------------------------- INSERT ... SELECT

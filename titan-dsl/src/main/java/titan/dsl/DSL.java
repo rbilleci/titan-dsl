@@ -479,6 +479,9 @@ public final class DSL {
             if (!Column.class.isAssignableFrom(field.getType())) {
                 continue;
             }
+            // A public field of a package-private descriptor class is still not accessible
+            // across packages without this.
+            field.trySetAccessible();
             try {
                 Object value = field.get(table);
                 if (value instanceof Column<?> column) {

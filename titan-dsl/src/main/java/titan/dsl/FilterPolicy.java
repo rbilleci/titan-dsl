@@ -444,33 +444,6 @@ public final class FilterPolicy {
     }
 
     /**
-     * MySQL's {@code ON DUPLICATE KEY UPDATE} takes no WHERE, so the existing row can only be
-     * kept in scope by the unique key itself: every checked column must be part of the declared
-     * conflict target, and filters that are not direct columns cannot be guarded at all.
-     */
-    void checkMysqlUpsert(TableLike<?> table, Scope scope, List<Column<?>> conflictColumns) {
-        TablePlan plan = writePlan(table);
-        if (plan.exempt()) {
-            return;
-        }
-        TableRef ref = TableRef.of(table);
-        for (Checked check : plan.checked()) {
-            if (scopeValue(check.filter(), scope, ref) != null && indexOf(conflictColumns, check.column()) < 0) {
-                throw new IllegalStateException("MySQL ON DUPLICATE KEY UPDATE on " + ref + " needs "
-                        + check.column().name() + " in onConflict(...) and in the matching unique key; "
-                        + "the existing row cannot be checked otherwise.");
-            }
-        }
-        for (Filter<?> filter : plan.uncheckedFilters()) {
-            if (scopeValue(filter, scope, ref) != null) {
-                throw new IllegalStateException("MySQL ON DUPLICATE KEY UPDATE on " + ref + " cannot check the "
-                        + "existing row for filter '" + filter.name() + "' (not a direct column binding); use a "
-                        + "direct column, PostgreSQL, or unscoped() deliberately.");
-            }
-        }
-    }
-
-    /**
      * {@code INSERT ... SELECT} is accepted only in the copy-within-scope shape: each checked
      * target column is fed by the same filter's checked column of the source FROM relation, and
      * the source carries the same scope, so its rows already passed the read predicate.
@@ -505,6 +478,15 @@ public final class FilterPolicy {
         if (sourceFilters == null || sourceFilters.policy() != this || !Objects.equals(sourceFilters.scope(), scope)) {
             throw new IllegalStateException("INSERT ... SELECT into " + ref
                     + " requires a source query built from the same scoped context.");
+        }
+        if (source.hasSetOperations()) {
+            // Operands carry their own filters, so a union could add rows from another context.
+            throw new IllegalStateException("INSERT ... SELECT into " + ref
+                    + " does not accept UNION/INTERSECT/EXCEPT sources; insert each branch separately.");
+        }
+        if (source.projectionSize() < targetColumns.size()) {
+            throw new IllegalStateException("INSERT ... SELECT into " + ref + " projects " + source.projectionSize()
+                    + " columns for " + targetColumns.size() + " target columns.");
         }
         TableLike<?> from = source.fromRelation();
         TableRef fromRef = from == null ? null : TableRef.of(from);
@@ -1129,6 +1111,9 @@ public final class FilterPolicy {
             if (Modifier.isStatic(field.getModifiers()) || !type.isAssignableFrom(field.getType())) {
                 continue;
             }
+            // A public field of a package-private descriptor class is still not accessible
+            // across packages without this.
+            field.trySetAccessible();
             try {
                 values.add(type.cast(field.get(relation)));
             } catch (IllegalAccessException e) {

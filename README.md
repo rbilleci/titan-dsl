@@ -590,10 +590,9 @@ scope could read.
   from a single-valued scope. `anyOf` columns need at least one member in scope.
 - An UPDATE that moves an `anyOf` member out of scope affects only rows that
   stay visible through another member; the rendered WHERE carries that test.
-- PostgreSQL upserts render `DO UPDATE SET ... WHERE <scope>`, so a conflict
-  with another scope's row updates nothing. MySQL's `ON DUPLICATE KEY UPDATE`
-  has no WHERE: checked columns must be in `onConflict(...)` and in the unique
-  key, and tables without a direct column binding cannot be upserted in scope.
+- Upserts guard the existing row: PostgreSQL renders `DO UPDATE SET ... WHERE
+  <scope>`, MySQL renders each assignment as `IF(<scope>, <new value>, column)`.
+  A key conflict with another scope's row changes nothing in either dialect.
 - `INSERT ... SELECT` is accepted only when each checked column is projected
   from the same filter's column of the source FROM relation, built from the
   same scoped context.
@@ -676,8 +675,13 @@ Annotations alone do not create or execute database routines.
 - Identifiers are not universally quoted. Use trusted schema/table/column names
   and aliases; avoid reserved words or supply reviewed dialect-specific SQL.
   Raw fragment APIs do not escape untrusted input.
-- The test suite validates Java behavior and rendering without a live database.
-  It does not certify an execution environment or authorize queries for you.
+- MySQL rejects a self-referential automatic-filter path (a table reached
+  through its own foreign key) in UPDATE and DELETE with error 1093; bind such
+  tables directly or by lambda. PostgreSQL accepts the correlated subquery.
+- The default test suite validates Java behavior and rendering without a live
+  database; `./gradlew integrationTest` also executes the automatic-filter SQL
+  shapes against PostgreSQL and MySQL containers. Neither certifies your
+  execution environment or authorizes queries for you.
 
 See [SECURITY.md](SECURITY.md) for reporting and safe-use guidance.
 
