@@ -2,7 +2,7 @@
 # JDBC drivers and archive handling are security-reviewed alongside the Titan consumer.
 
 [versions]
-junit = "5.10.2"
+junit = "6.1.3"
 mockito = "5.23.0"
 archunit = "1.5.0"
 errorprone = "2.50.0"
